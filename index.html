@@ -3,20 +3,21 @@
   <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>My Project</title>
+    <title>ESP32 WebGL Test</title>
     <link rel="shortcut icon" href="TemplateData/favicon.ico">
     <style>
       * {
         margin: 0;
         padding: 0;
         border: 0;
-        overflow: hidden;
       }
       
       html, body {
         width: 100%;
         height: 100%;
         background: #000;
+        font-family: monospace; /* НОВОЕ: Шрифт для консоли */
+        color: #ccc;
       }
       
       #unity-container {
@@ -31,6 +32,78 @@
         background: #000;
       }
       
+      /* НОВЫЙ БЛОК: Панель диагностики */
+      #diagnostic-panel {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        width: 350px;
+        background: rgba(0, 20, 40, 0.85);
+        border: 1px solid #444;
+        border-radius: 5px;
+        padding: 10px;
+        z-index: 1000;
+        font-size: 12px;
+        max-height: 90vh;
+        overflow-y: auto;
+      }
+      
+      #diagnostic-panel h3 {
+        color: #4af;
+        margin-bottom: 8px;
+        text-align: center;
+      }
+      
+      #log-container {
+        background: rgba(0, 0, 0, 0.7);
+        border: 1px solid #333;
+        border-radius: 3px;
+        padding: 8px;
+        min-height: 100px;
+        max-height: 300px;
+        overflow-y: auto;
+        margin-bottom: 10px;
+      }
+      
+      .log-entry {
+        margin-bottom: 4px;
+        padding: 2px;
+        border-bottom: 1px dotted #333;
+      }
+      
+      .log-info { color: #8cf; }
+      .log-success { color: #4f4; font-weight: bold; }
+      .log-warning { color: #ff4; }
+      .log-error { color: #f44; font-weight: bold; }
+      
+      #connection-status {
+        padding: 8px;
+        margin: 5px 0;
+        border-radius: 3px;
+        text-align: center;
+        background: #222;
+      }
+      
+      .status-disconnected { background: #422 !important; color: #f99; }
+      .status-connecting { background: #442 !important; color: #ff4; }
+      .status-connected { background: #242 !important; color: #9f9; }
+      
+      #test-buttons button {
+        background: #333;
+        color: #ccc;
+        border: 1px solid #555;
+        border-radius: 3px;
+        padding: 6px 10px;
+        margin: 3px;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      
+      #test-buttons button:hover {
+        background: #444;
+      }
+      
+      /* Остальные стили (лоадер и т.д.) остаются как были */
       #unity-loading-bar {
         position: absolute;
         left: 50%;
@@ -73,31 +146,118 @@
         display: none;
       }
       
-      /* Скрываем всё лишнее */
       #unity-footer, #unity-webgl-logo, #unity-fullscreen-button, #unity-build-title, #unity-logo {
         display: none !important;
       }
     </style>
   </head>
   <body>
+    <!-- НОВЫЙ БЛОК: Панель диагностики -->
+    <div id="diagnostic-panel">
+      <h3>🔍 Диагностика WebGL</h3>
+      <div id="connection-status" class="status-disconnected">
+        ● Статус: Ожидание загрузки Unity...
+      </div>
+      <div>
+        <strong>Лог событий:</strong>
+        <div id="log-container"></div>
+      </div>
+      <div id="test-buttons">
+        <button onclick="testDirectPing()">Тест: Пинг ESP32 напрямую</button>
+        <button onclick="testCorsProxy()">Тест: Через CORS-прокси</button>
+        <button onclick="clearLog()">Очистить лог</button>
+      </div>
+    </div>
+    
     <div id="unity-container">
       <canvas id="unity-canvas"></canvas>
       <div id="unity-loading-bar">
-        <div id="loading-text">Loading...</div>
+        <div id="loading-text">Loading Unity WebGL...</div>
         <div id="unity-progress-bar-empty">
           <div id="unity-progress-bar-full"></div>
         </div>
       </div>
       <div id="unity-warning"></div>
     </div>
+    
     <script>
+      // ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ДИАГНОСТИКИ ==========
+      const esp32Ip = "192.168.1.53"; // Ваш IP ESP32
+      let unityInstance = null;
+      
+      // Функция для добавления записей в лог
+      function addLog(message, type = "info") {
+        const logContainer = document.getElementById("log-container");
+        const entry = document.createElement("div");
+        entry.className = `log-entry log-${type}`;
+        entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        logContainer.appendChild(entry);
+        logContainer.scrollTop = logContainer.scrollHeight; // Автопрокрутка вниз
+        console.log(`[WebGL-Diag] ${message}`);
+      }
+      
+      // Функция для обновления статуса соединения
+      function updateStatus(text, statusClass) {
+        const statusElem = document.getElementById("connection-status");
+        statusElem.textContent = `● ${text}`;
+        statusElem.className = "status-" + statusClass;
+      }
+      
+      // Функция для тестирования прямого доступа к ESP32
+      async function testDirectPing() {
+        updateStatus("Тест: Пинг ESP32 напрямую...", "connecting");
+        addLog(`Пытаюсь получить: http://${esp32Ip}/ping`, "info");
+        
+        try {
+          // Прямой fetch вызовет CORS ошибку, это ожидаемо
+          const response = await fetch(`http://${esp32Ip}/ping`);
+          const text = await response.text();
+          addLog(`✓ Успех! Ответ ESP32: ${text}`, "success");
+          updateStatus("ESP32 доступен напрямую (редкий случай)", "connected");
+        } catch (error) {
+          addLog(`✗ Ошибка (ожидаемо): ${error.message}`, "warning");
+          updateStatus("ESP32 недоступен напрямую (нормально, CORS)", "disconnected");
+        }
+      }
+      
+      // Функция для тестирования через CORS-прокси
+      async function testCorsProxy() {
+        updateStatus("Тест: Запрос через CORS-прокси...", "connecting");
+        const targetUrl = `http://${esp32Ip}/ping`;
+        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`;
+        
+        addLog(`Проксируем через: ${proxyUrl}`, "info");
+        
+        try {
+          const response = await fetch(proxyUrl);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const text = await response.text();
+          addLog(`✓ Прокси ответил! Через него ESP32 сказал: ${text}`, "success");
+          updateStatus("CORS-прокси работает, ESP32 отвечает", "connected");
+        } catch (error) {
+          addLog(`✗ Ошибка прокси: ${error.message}`, "error");
+          addLog("Это значит: 1) Прокси упал, или 2) ESP32 не виден из интернета", "error");
+          updateStatus("Проблема: прокси или доступ к ESP32", "disconnected");
+        }
+      }
+      
+      function clearLog() {
+        document.getElementById("log-container").innerHTML = "";
+        addLog("Лог очищен", "info");
+      }
+      
+      // ========== ОРИГИНАЛЬНЫЙ КОД ЗАГРУЗКИ UNITY (с диагностикой) ==========
       var container = document.querySelector("#unity-container");
       var canvas = document.querySelector("#unity-canvas");
       var loadingBar = document.querySelector("#unity-loading-bar");
       var progressBarFull = document.querySelector("#unity-progress-bar-full");
       var warningBanner = document.querySelector("#unity-warning");
 
+      // Перехватываем функцию показа баннеров Unity
       function unityShowBanner(msg, type) {
+        addLog(`Unity Banner: ${msg}`, type === 'error' ? 'error' : 'warning');
+        
+        // Оригинальная логика
         function updateBannerVisibility() {
           warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
         }
@@ -137,36 +297,65 @@
         container.className = "unity-mobile";
         canvas.className = "unity-mobile";
       } else {
-        // Для десктопа растягиваем на всё окно
         canvas.style.width = "100%";
         canvas.style.height = "100%";
       }
 
       loadingBar.style.display = "block";
+      addLog("Начинаю загрузку Unity WebGL...", "info");
+      updateStatus("Загрузка Unity...", "connecting");
 
       var script = document.createElement("script");
       script.src = loaderUrl;
+      
       script.onload = () => {
+        addLog("Unity Loader.js загружен, создаю инстанс...", "success");
         createUnityInstance(canvas, config, (progress) => {
           progressBarFull.style.width = 100 * progress + "%";
-        }).then((unityInstance) => {
+          if (progress === 1) {
+            addLog("Загрузка ресурсов Unity завершена", "success");
+          }
+        }).then((instance) => {
+          unityInstance = instance;
           loadingBar.style.display = "none";
+          addLog("✓ Unity WebGL успешно загружена и запущена!", "success");
+          updateStatus("Unity готова. Проверьте соединение с ESP32 кнопками выше.", "connected");
+          
+          // Если в Unity есть глобальный метод для проверки, можно вызвать его
+          if (unityInstance.SendMessage) {
+            setTimeout(() => {
+              try {
+                unityInstance.SendMessage("ESP32_WebGL_GitHub", "ManualTest");
+                addLog("Отправил команду ManualTest в Unity", "info");
+              } catch(e) {
+                // Игнорируем, если объект/метод не найден
+              }
+            }, 1000);
+          }
         }).catch((message) => {
+          addLog(`Фатальная ошибка загрузки Unity: ${message}`, "error");
+          updateStatus("Ошибка загрузки Unity", "disconnected");
           alert(message);
         });
       };
       
       script.onerror = () => {
+        addLog("Не удалось загрузить скрипт Unity Loader.js", "error");
+        updateStatus("Ошибка: не найден Loader.js", "disconnected");
         unityShowBanner('Failed to load Unity WebGL build. Check console for details.', 'error');
       };
       
       document.body.appendChild(script);
-
+      
       // Блокируем контекстное меню
       document.addEventListener('contextmenu', function(e) {
         e.preventDefault();
         return false;
       });
+      
+      // Первая запись в лог
+      addLog("Диагностическая панель инициализирована", "info");
+      addLog(`Целевой IP ESP32: ${esp32Ip}`, "info");
     </script>
   </body>
 </html>
